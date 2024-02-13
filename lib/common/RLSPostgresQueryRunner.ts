@@ -7,6 +7,7 @@ import {
   TenancyModelOptions,
   TenantId,
 } from '../interfaces/tenant-options.interface';
+import { ReadStream } from 'typeorm/platform/PlatformTools';
 
 export class RLSPostgresQueryRunner extends PostgresQueryRunner {
   tenantId: TenantId = null;
@@ -27,15 +28,23 @@ export class RLSPostgresQueryRunner extends PostgresQueryRunner {
     this.actorId = tenancyModelOptions.actorId;
   }
 
+  private async setOptionsInDB() {
+    await super.query(
+      `set "rls.tenant_id" = '${this.tenantId}'; set "rls.actor_id" = '${this.actorId}';`,
+    );
+  }
+
+  private async resetOptionsInDB() {
+    await super.query(`reset rls.actor_id; reset rls.tenant_id;`);
+  }
+
   async query(
     queryString: string,
     params?: any[],
     useStructuredResult?: boolean,
   ): Promise<any> {
     if (!this.isTransactionCommand) {
-      await super.query(
-        `set "rls.tenant_id" = '${this.tenantId}'; set "rls.actor_id" = '${this.actorId}';`,
-      );
+      await this.setOptionsInDB();
     }
 
     let result: Promise<any>;
@@ -47,7 +56,45 @@ export class RLSPostgresQueryRunner extends PostgresQueryRunner {
     }
 
     if (!this.isTransactionCommand && !(this.isTransactionActive && error)) {
-      await super.query(`reset rls.actor_id; reset rls.tenant_id;`);
+      await this.resetOptionsInDB();
+    }
+
+    if (error) throw error;
+    else return result;
+  }
+
+  async stream(
+    queryString: string,
+    params?: any[],
+    onEnd?: () => void,
+    onError?: (err: Error) => void,
+  ): Promise<ReadStream> {
+    if (!this.isTransactionCommand) {
+      await this.setOptionsInDB();
+    }
+    let result: ReadStream = null;
+    let error: Error;
+    try {
+      result = await super.stream(
+        queryString,
+        params,
+        async () => {
+          if (!this.isTransactionCommand) {
+            await this.resetOptionsInDB();
+          }
+
+          if (onEnd) {
+            onEnd();
+          }
+        },
+        onError,
+      );
+    } catch (err) {
+      error = err;
+    }
+
+    if (!this.isTransactionCommand && !(this.isTransactionActive && error)) {
+      await this.resetOptionsInDB();
     }
 
     if (error) throw error;
